@@ -24,82 +24,43 @@ Notably, you'll need to obtain a OAuth2.0 client secrets file and set the
 """
 
 import os
+from typing import Tuple, Dict
 
 import flask
 import google.oauth2.credentials
 import google_auth_oauthlib.flow
 import googleapiclient.discovery
+from flask import Flask, redirect, session, url_for, request
 
-# The path to the client-secrets.json file obtained from the Google API
-# Console. You must set this before running this application.
+# Configuration
 CLIENT_SECRETS_FILENAME = os.environ["GOOGLE_CLIENT_SECRETS"]
-# The OAuth 2.0 scopes that this application will ask the user for. In this
-# case the application will ask for basic profile information.
 SCOPES = ["email", "profile"]
+SECRET_KEY = "TODO: replace with a secret value"
 
-app = flask.Flask(__name__)
-# TODO: A secret key is included in the sample so that it works but if you
-# use this code in your application please replace this with a truly secret
-# key. See http://flask.pocoo.org/docs/0.12/quickstart/#sessions.
-app.secret_key = "TODO: replace with a secret value"
+app = Flask(__name__)
+app.secret_key = SECRET_KEY
 
 
-@app.route("/")
-def index():
-    if "credentials" not in flask.session:
-        return flask.redirect("authorize")
+def get_oauth2_credentials() -> Dict[str, str]:
+    """
+    Retrieve the OAuth2 credentials from the session.
 
-    # Load the credentials from the session.
-    credentials = google.oauth2.credentials.Credentials(**flask.session["credentials"])
-
-    # Get the basic user info from the Google OAuth2.0 API.
-    client = googleapiclient.discovery.build("oauth2", "v2", credentials=credentials)
-
-    response = client.userinfo().v2().me().get().execute()
-
-    return str(response)
+    Returns:
+        A dictionary containing the OAuth2 credentials.
+    """
+    if "credentials" not in session:
+        return {}
+    return session["credentials"]
 
 
-@app.route("/authorize")
-def authorize():
-    # Create a flow instance to manage the OAuth 2.0 Authorization Grant Flow
-    # steps.
-    flow = google_auth_oauthlib.flow.Flow.from_client_secrets_file(
-        CLIENT_SECRETS_FILENAME, scopes=SCOPES
-    )
-    flow.redirect_uri = flask.url_for("oauth2callback", _external=True)
-    authorization_url, state = flow.authorization_url(
-        # This parameter enables offline access which gives your application
-        # an access token and a refresh token for the user's credentials.
-        access_type="offline",
-        # This parameter enables incremental auth.
-        include_granted_scopes="true",
-    )
+def save_oauth2_credentials(credentials: google.oauth2.credentials.Credentials) -> None:
+    """
+    Save the OAuth2 credentials to the session.
 
-    # Store the state in the session so that the callback can verify the
-    # authorization server response.
-    flask.session["state"] = state
-
-    return flask.redirect(authorization_url)
-
-
-@app.route("/oauth2callback")
-def oauth2callback():
-    # Specify the state when creating the flow in the callback so that it can
-    # verify the authorization server response.
-    state = flask.session["state"]
-    flow = google_auth_oauthlib.flow.Flow.from_client_secrets_file(
-        CLIENT_SECRETS_FILENAME, scopes=SCOPES, state=state
-    )
-    flow.redirect_uri = flask.url_for("oauth2callback", _external=True)
-
-    # Use the authorization server's response to fetch the OAuth 2.0 tokens.
-    authorization_response = flask.request.url
-    flow.fetch_token(authorization_response=authorization_response)
-
-    # Store the credentials in the session.
-    credentials = flow.credentials
-    flask.session["credentials"] = {
+    Args:
+        credentials: The OAuth2 credentials to be saved.
+    """
+    session["credentials"] = {
         "token": credentials.token,
         "refresh_token": credentials.refresh_token,
         "token_uri": credentials.token_uri,
@@ -108,13 +69,60 @@ def oauth2callback():
         "scopes": credentials.scopes,
     }
 
-    return flask.redirect(flask.url_for("index"))
+
+def get_oauth2_flow() -> google_auth_oauthlib.flow.Flow:
+    """
+    Create an OAuth2 flow instance.
+
+    Returns:
+        An OAuth2 flow instance.
+    """
+    flow = google_auth_oauthlib.flow.Flow.from_client_secrets_file(
+        CLIENT_SECRETS_FILENAME, scopes=SCOPES
+    )
+    flow.redirect_uri = url_for("oauth2callback", _external=True)
+    return flow
+
+
+@app.route("/")
+def index():
+    """
+    Retrieve the user's basic information from the Google OAuth2.0 API.
+    """
+    credentials = google.oauth2.credentials.Credentials(**get_oauth2_credentials())
+    client = googleapiclient.discovery.build("oauth2", "v2", credentials=credentials)
+    response = client.userinfo().v2().me().get().execute()
+    return str(response)
+
+
+@app.route("/authorize")
+def authorize():
+    """
+    Start the OAuth2 authorization flow.
+    """
+    flow = get_oauth2_flow()
+    authorization_url, state = flow.authorization_url(
+        access_type="offline", include_granted_scopes="true"
+    )
+    session["state"] = state
+    return redirect(authorization_url)
+
+
+@app.route("/oauth2callback")
+def oauth2callback():
+    """
+    Handle the OAuth2 callback after the authorization flow.
+    """
+    state = session["state"]
+    flow = get_oauth2_flow()
+    flow.state = state
+    authorization_response = request.url
+    flow.fetch_token(authorization_response=authorization_response)
+    credentials = flow.credentials
+    save_oauth2_credentials(credentials)
+    return redirect(url_for("index"))
 
 
 if __name__ == "__main__":
-    # When running locally with Flask's development server this disables
-    # OAuthlib's HTTPs verification. When running in production with a WSGI
-    # server such as gunicorn this option will not be set and your application
-    # *must* use HTTPS.
     os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
     app.run("localhost", 8080, debug=True)
